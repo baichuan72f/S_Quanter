@@ -173,3 +173,5 @@ py -3.11 -m venv .venv
 
 可选依赖都没装：`matplotlib`（引擎的简易绩效图，缺失时自动跳过）、
 `IPython`（notebook 内联展示）、`pyarrow`（DuckDB 读 parquet 自带，不需要）。
+
+> 本仓数据均来自本地缓存，不含任何联网抓取。
