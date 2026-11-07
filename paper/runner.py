@@ -51,6 +51,7 @@ for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / 'engine')):
 import pandas as pd  # noqa: E402
 
 import smalltrader as bt  # noqa: E402
+import bqcompat  # noqa: E402 - BigQuant 平台包名兼容层（bigquant/dai/bigmodule）
 from . import checks, state  # noqa: E402
 from .constants import RUN_MODE_PAPERTRADING  # noqa: E402
 from .local_data import LocalParquetDataSource  # noqa: E402
@@ -240,18 +241,80 @@ def detect_warmup_days(source_text: str) -> int:
     return int(longest * 1.55) + 30       # 交易日 → 自然日（含长假余量）
 
 
+# notebook「环境专用」代码单元的标记：这些单元只在 VS Code / Jupyter / Colab 里
+# 有意义（取当前 cell 的元数据、读本地 notebook 路径、挂载盘等），当脚本执行必然
+# 报错（如 `get_ipython()` 返回 None → `'NoneType' object has no attribute
+# 'get_parent'`）。克隆自平台的 notebook 里常残留这类单元，跑批时应跳过。
+_NB_ENV_MARKERS = ('get_ipython(', 'vscode-notebook-cell://', 'google.colab',
+                   'nbformat.read(')
+# 只要单元里出现这些，就认定它在定义策略本体，不能跳
+_NB_KEEP_MARKERS = ('def handle_data', 'def initialize', 'def before_trading_start',
+                    'bigtrader.run(', 'M.bigtrader', 'STRATEGY')
+
+# 最近一次 _notebook_source 跳过的环境单元数（供日志提示）
+LAST_SKIPPED_CELLS = 0
+
+# 「只由一个名字/属性链构成」的单元 = notebook 的展示单元
+_DISPLAY_CELL_RE = re.compile(r'[A-Za-z_][\w\.]*(?:\[\d+\])?')
+
+
 def _notebook_source(path: Path) -> str:
-    """拼接 .ipynb 的 code cell 源码（跳过 % / ! 魔法命令行）。"""
+    """拼接 .ipynb 全部 code cell 源码（仅供静态分析：warmup 探测、源码扫描）。
+
+    执行路径不再用整段 exec，见 _exec_notebook（逐格执行 + 环境单元容错）；
+    这里保留全量拼接，避免静态分析漏掉被容错跳过的单元里的窗口参数。
+    """
+    return '\n\n'.join(src for _idx, src in _notebook_cells(path))
+
+
+def _is_env_only_cell(body: str) -> bool:
+    if not any(mark in body for mark in _NB_ENV_MARKERS):
+        return False
+    return not any(mark in body for mark in _NB_KEEP_MARKERS)
+
+
+def _notebook_cells(path: Path):
+    """逐个 yield (单元序号, 源码)，只做魔法行清理，不做整格丢弃。"""
     nb = json.loads(path.read_text(encoding='utf-8'))
-    chunks = []
-    for cell in nb.get('cells', []):
+    for idx, cell in enumerate(nb.get('cells', [])):
         if cell.get('cell_type') != 'code':
             continue
         src = ''.join(cell.get('source') or [])
         lines = [ln for ln in src.splitlines() if not _MAGIC_RE.match(ln)]
         if lines:
-            chunks.append('\n'.join(lines))
-    return '\n\n'.join(chunks)
+            yield idx, '\n'.join(lines)
+
+
+def _exec_notebook(module, path: Path) -> int:
+    """逐格 exec notebook；环境专用单元真报错时才跳过它。
+
+    为什么不预先整格丢弃：这类单元里常顺带定义了后面要用的变量（`desc`、
+    `path` 之类），整格扔掉会让后续单元 NameError。这里按「先执行、失败了
+    且确认是环境类单元」的顺序处理，保留报错之前已生效的部分。
+
+    返回跳过的单元数。
+    """
+    skipped = 0
+    for idx, src in _notebook_cells(path):
+        # 「展示单元」：整个单元只有一个变量名/属性链（notebook 里靠它把结果打印
+        # 出来）。当脚本跑没有意义，变量未定义时还会 NameError，直接跳过。
+        if _DISPLAY_CELL_RE.fullmatch(src.strip()):
+            continue
+        try:
+            exec(compile(src, f'{path}#cell{idx}', 'exec'), module.__dict__)
+        except Exception as exc:  # noqa: BLE001
+            env_related = _is_env_only_cell(src) or (
+                isinstance(exc, (NameError, AttributeError))
+                and any(m in src for m in _NB_ENV_MARKERS))
+            if env_related:
+                skipped += 1
+                print(f'[WARN] 跳过 notebook 第 {idx} 个代码单元（环境专用，'
+                      f'{type(exc).__name__}: {exc}）')
+                continue
+            if isinstance(exc, ModuleNotFoundError):
+                raise _missing_dep_error(exc) from exc
+            raise
+    return skipped
 
 
 def _load_module(path: Path) -> Tuple[Any, Dict[str, Any]]:
@@ -269,6 +332,15 @@ def _load_module(path: Path) -> Tuple[Any, Dict[str, Any]]:
     import data_source              # noqa: F401  engine/data_source.py
     import queries                  # noqa: F401  项目根 queries.py
 
+    # 平台原味策略（克隆自 BigQuant）写的是平台包名：
+    #   from bigquant import bigtrader, dai
+    #   from bigmodule import M
+    #   from bigtrader.finance.commission import PerOrder
+    # 这些包本地没有，会抛 ModuleNotFoundError。装兼容层把它们指到本地实现
+    # （bigtrader → 本引擎模块，dai → 本地 DuckDB，M.bigtrader.vNN → run）。
+    # 必须在 exec 策略之前装：策略 import 发生在模块执行阶段。
+    bqcompat.install(bt)
+
     # 包式写法（import engine.smalltrader）与顶层写法共用同一份模块，
     # 否则 no-op 拦截会漏掉前者的 run —— 一次「读元信息」= 一次完整回测。
     _unify_engine_module(bt)
@@ -278,17 +350,38 @@ def _load_module(path: Path) -> Tuple[Any, Dict[str, Any]]:
         module = types.ModuleType(name)
         module.__file__ = str(path)
         sys.modules[name] = module
-        source = _notebook_source(path)
         with _CaptureRun(bt) as cap:
-            exec(compile(source, str(path), 'exec'), module.__dict__)
+            _exec_notebook(module, path)
         return module, cap.kwargs
 
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     with _CaptureRun(bt) as cap:
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except ModuleNotFoundError as e:
+            raise _missing_dep_error(e) from e
     return module, cap.kwargs
+
+
+def _missing_dep_error(exc: ModuleNotFoundError) -> ImportError:
+    """把裸的 ModuleNotFoundError 翻成「装哪个包、跑哪条命令」。
+
+    平台策略 import 的包（scipy 等）随包 .venv 默认没装；直接抛原异常时，看板
+    与命令行只显示一行 `No module named 'scipy'`，看不出该怎么修。
+    """
+    mod = (exc.name or '').split('.')[0]
+    if not mod:
+        return ImportError(str(exc))
+    single = f'.venv\\Scripts\\python.exe -m pip install {mod}'
+    return ImportError(
+        f"策略需要第三方包 '{mod}'，但当前 .venv 里没装。\n"
+        f"  · 只装这一个：{single}\n"
+        f"  · 一次装齐常用依赖（推荐，需联网，约 300 MB）：双击 install_deps.bat，或执行\n"
+        f"      .venv\\Scripts\\python.exe -m pip install -r requirements-extra.txt "
+        f"-c constraints.txt\n"
+        f"  （随包 .venv 只带 pandas/numpy/duckdb；清单见 requirements-extra.txt）")
 
 
 def _guess_instruments(module) -> Optional[List[str]]:
@@ -371,15 +464,22 @@ class StrategySpec:
         meta: Dict[str, Any] = {}
 
         # 1. 捕获到的 run(...) kwargs（脚本式/notebook 策略的参数来源）
+        #    instruments 也在这里：平台写法的标的池常藏在
+        #    ``M.bigtrader.vNN(data={"instruments": [...]})`` 里，由兼容层提取后
+        #    以 run(instruments=...) 的形式出现在捕获 kwargs 中。
         for k in ('capital_base', 'benchmark', 'order_price_field_buy',
-                  'order_price_field_sell', 'warmup_days', *_CALLBACK_KEYS):
+                  'order_price_field_sell', 'warmup_days', 'instruments',
+                  *_CALLBACK_KEYS):
             if captured.get(k) is not None:
                 meta[k] = captured[k]
 
         # 2. 模块属性里的回调（只定义了函数、没调 run 的脚本式 .py）
+        #    不覆盖第 1 步已捕获的：平台原味策略的回调可能在捕获阶段被包装过
+        #    （bqcompat 给回调套壳以注入 context.data），用模块级原函数覆盖
+        #    会把包装丢掉。
         for k in _CALLBACK_KEYS:
             fn = getattr(module, k, None)
-            if callable(fn):
+            if callable(fn) and k not in meta:
                 meta[k] = fn
 
         # 3. 文件内 STRATEGY dict

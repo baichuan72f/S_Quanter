@@ -1,0 +1,5 @@
+# Pin the versions that ship with the bundled .venv so that installing extras
+# never silently upgrades numpy to 2.x (which would change pandas/engine
+# behaviour).
+numpy==1.26.4
+pandas==2.3.3

@@ -21,3 +21,9 @@ data/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 研究工作区(647MB notebook 合集 + graphflow 缓存),由操作者本地保存,不入库
+我的克隆策略/
+.graphflow/
+.graphflow-cache/
+graphflow-out/
