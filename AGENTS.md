@@ -1,6 +1,6 @@
 # AGENTS.md — 给维护这个仓库的智能体
 
-这是 **SmallQuant**：BigQuant 模拟盘的本地离线复刻（Python 3.11 + pandas/numpy/duckdb + SQLite），
+这是 **S_Quanter**（原名 SmallQuant，2026-11 起统一为 S_Quanter）：BigQuant 模拟盘的本地离线复刻（Python 3.11 + pandas/numpy/duckdb + SQLite），
 行情走本地 parquet（DuckDB 惰性读），撮合是自研引擎 `engine/smalltrader.py`，看板是本地 Web。
 
 ## 先跑通，再改代码

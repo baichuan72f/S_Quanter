@@ -1,4 +1,6 @@
-# SmallQuant 本地模拟盘（独立分发包）
+# S_Quanter 本地模拟盘（独立分发包）
+
+> 原名 **SmallQuant**；2026-11 起仓库与项目名统一为 **S_Quanter**（`baichuan72f/S_Quanter`）。代码、数据目录与策略文件未改名。
 
 BigQuant 模拟盘的本地复刻：**全离线运行，不需要 BigQuant 账号、不需要安装 bigquant / bigtradercpp / dai**。
 行情走本地 parquet（DuckDB 惰性读），状态走 SQLite，撮合是自写引擎（与平台逐笔对齐过）。
@@ -24,7 +26,7 @@ BigQuant 模拟盘的本地复刻：**全离线运行，不需要 BigQuant 账�
 ## 目录结构
 
 ```
-smallquant/
+s_quanter/
 ├─ .venv/                    内置 Python 3.11 环境（pandas / numpy / duckdb）
 ├─ data/                     本地 parquet 行情快照（DuckDB 建视图惰性读）
 ├─ engine/                   撮合引擎 smalltrader + 本地数据源（无 dai）
