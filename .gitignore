@@ -1,0 +1,23 @@
+# 运行时产物：状态库 / 委托清单 / 日志 / 缓存一律不入库
+state/*.db
+state/*.db-wal
+state/*.db-shm
+notifications/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 本地 Python 环境与行情快照：体积大(206MB + 94MB)、可由 datadownload/ 的脚本从 BigQuant 重新导出，
+# 且 parquet 是二进制、无法 diff。需要跑起来时：
+#   - 主 checkout 里保留着你本机的 data/ 与 .venv/
+#   - superagent 的每个工单目录会在 prepare 阶段用 junction 链接这两者(见 E:\project\superagent-setup-notes.md)
+.venv/
+data/
+*.parquet
+
+# 编辑器/系统杂物
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

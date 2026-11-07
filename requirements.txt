@@ -1,0 +1,5 @@
+# SmallQuant 本地模拟盘 —— 最小运行依赖（Python 3.11）
+# 内置 .venv 已装好这些包；只有在 .venv 不可用时才需要重装
+pandas==2.3.3
+numpy==1.26.4
+duckdb==1.5.5

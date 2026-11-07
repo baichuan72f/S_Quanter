@@ -1,0 +1,13 @@
+{
+  "strategy_id": "小市值5日轮动2",
+  "strategy_name": "小市值5日轮动2",
+  "capital_base": 500000.0,
+  "benchmark": "000300.SH",
+  "order_price_field_buy": "open",
+  "order_price_field_sell": "open",
+  "warmup_days": 10,
+  "instruments": [
+    "全市场股票"
+  ],
+  "source_file": "strategies/小市值5日轮动2.ipynb"
+}

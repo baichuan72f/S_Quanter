@@ -1,0 +1,24 @@
+{
+  "strategy_id": "轮动宝2本地",
+  "strategy_name": "轮动宝2本地",
+  "capital_base": 100000.0,
+  "benchmark": "000300.SH",
+  "order_price_field_buy": "open",
+  "order_price_field_sell": "open",
+  "warmup_days": 120,
+  "instruments": [
+    "511380.SH",
+    "513520.SH",
+    "159980.SZ",
+    "160723.SZ",
+    "159659.SZ",
+    "159985.SZ",
+    "513500.SH",
+    "518880.SH",
+    "513130.SH",
+    "510300.SH",
+    "159783.SZ",
+    "159570.SZ"
+  ],
+  "source_file": "strategies/轮动宝2本地.ipynb"
+}
