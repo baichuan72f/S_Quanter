@@ -22,13 +22,34 @@ def _agg(name: str, sql_agg: str):
     return build
 
 
+_TRUE = {'true', '1'}
+_FALSE = {'false', '0'}
+
+
+def _as_bool(value: str, arg: str) -> bool:
+    """解析平台的关键字开关值（SQL 文本 `true` / `false`，也接受 1 / 0）。"""
+    v = value.strip().lower()
+    if v in _TRUE:
+        return True
+    if v in _FALSE:
+        return False
+    raise DialectError(f'{arg} 只接受 true/false（或 1/0），实际是 {value!r}')
+
+
 def _rank(name: str, sql_rank: str):
     def build(args, named):
         col = args[0]
+        # 平台签名 c_pct_rank(x, ascending:=true)：ascending 是升降序开关。
+        # 默认（不写或 true）保持平台默认结果，即按升序排名；false 时改为降序。
+        # 不写开关时生成的 SQL 与旧版完全一致。
+        order = ''
+        ascending = named.get('ascending')
+        if ascending is not None and not _as_bool(ascending, 'ascending'):
+            order = ' DESC'
         # 空值必须保持空值：DuckDB 的 ORDER BY 默认把 NULL 排在末尾，
         # 直接算排名会给"当天没行情"的标的排到最高/最低位，与截面语义不符。
         return (f'CASE WHEN {col} IS NULL THEN NULL ELSE '
-                f'{sql_rank}() OVER ({CROSS_OVER} ORDER BY {col}) END')
+                f'{sql_rank}() OVER ({CROSS_OVER} ORDER BY {col}{order}) END')
     return build
 
 

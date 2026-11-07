@@ -87,8 +87,14 @@ def reference(df: pd.DataFrame, name: str, args: str) -> pd.Series | None:
         # 截面：口径见文件头说明
         'c_pct_rank(close)': lambda: df.groupby('date')['close'].transform(
             lambda s: (s.rank(method='min') - 1) / (len(s) - 1) if len(s) > 1 else np.nan),
+        # ascending 开关：默认 true（升序）与平台默认一致，false 时降序
+        'c_pct_rank(close, ascending:=false)': lambda: df.groupby('date')['close'].transform(
+            lambda s: ((s.rank(method='min', ascending=False) - 1) / (len(s) - 1)
+                       if len(s) > 1 else np.nan)),
         'c_rank(close)': lambda: df.groupby('date')['close'].transform(
             lambda s: s.rank(method='min')),
+        'c_rank(close, ascending:=false)': lambda: df.groupby('date')['close'].transform(
+            lambda s: s.rank(method='min', ascending=False)),
         'c_avg(close)': lambda: df.groupby('date')['close'].transform('mean'),
         'c_std(close)': lambda: df.groupby('date')['close'].transform(lambda s: s.std(ddof=1)),
         'c_zscore(close)': lambda: df.groupby('date')['close'].transform(
@@ -140,7 +146,9 @@ CASES = [
     'm_avg(close,5)', 'm_sum(close,5)', 'm_stddev(close,5)', 'm_max(close,5)',
     'm_min(close,5)', 'm_median(close,5)', 'm_rolling_rank(close,5)',
     'm_corr(close,volume,20)', 'm_decay_linear(close,5)',
-    'c_pct_rank(close)', 'c_rank(close)', 'c_avg(close)', 'c_std(close)',
+    'c_pct_rank(close)', 'c_pct_rank(close, ascending:=false)',
+    'c_rank(close)', 'c_rank(close, ascending:=false)',
+    'c_avg(close)', 'c_std(close)',
     'c_zscore(close)', 'c_normalize(close)', 'c_median(close)',
     'c_quantile_cont(close,0.25)',
     'm_ta_ema(close,10)', 'm_ta_rsi(close,14)',
