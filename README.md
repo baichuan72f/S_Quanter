@@ -1,6 +1,6 @@
 # SmallQuant 本地模拟盘（独立分发包）
 
-BigQuant 模拟盘的本地复刻：**全离线运行，不需要 BigQuant 账号、不需要装 bigquant / bigtradercpp / dai**。
+BigQuant 模拟盘的本地复刻：**全离线运行，不需要 BigQuant 账号、不需要安装 bigquant / bigtradercpp / dai**。
 行情走本地 parquet（DuckDB 惰性读），状态走 SQLite，撮合是自写引擎（与平台逐笔对齐过）。
 
 整个目录拷到任意 Windows 机器，装好 Python 3.11（或用内置 .venv）即可跑。
