@@ -74,6 +74,9 @@ def have(mod: str) -> bool:
 
 
 _PYPI_CACHE: dict = {}
+# 少数包的 PyPI 项目名与 import 名不同，按 import 名拼 /simple/ 会 404，
+# 被误判成「PyPI 上没有、pip 装不了」。
+PYPI_NAMES = {'talib': 'TA-Lib'}
 
 
 def on_pypi(mod: str) -> bool:
@@ -89,7 +92,7 @@ def on_pypi(mod: str) -> bool:
     ok = False
     try:
         import urllib.request
-        url = f'https://pypi.org/simple/{mod}/'
+        url = f'https://pypi.org/simple/{PYPI_NAMES.get(mod, mod)}/'
         req = urllib.request.Request(url, method='HEAD')
         with urllib.request.urlopen(req, timeout=8) as r:
             ok = r.status == 200
