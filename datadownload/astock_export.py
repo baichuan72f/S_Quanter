@@ -146,8 +146,11 @@ def trading_days_of_month(year: int, month: int) -> list[str]:
     if not isinstance(data, list) or not data:
         raise RuntimeError(f"深交所没有返回 {year}-{month} 的日历")
     days = [str(rec["jyrq"])[:10] for rec in data if str(rec.get("jybz")) == "1"]
+    # 深交所按月发布：月底的日期也在里面。还没到的日子不是交易日，写进日历就会让每天的检测都告警一次。
+    today = datetime.now().date().isoformat()
+    days = [day for day in days if day <= today]
     if not days:
-        raise RuntimeError(f"深交所 {year}-{month} 没有交易日")
+        raise RuntimeError(f"深交所 {year}-{month} 没有已经发生的交易日")
     return sorted(days)
 
 
@@ -319,12 +322,40 @@ def write_year(rows: list[dict], root: Path, table: str) -> None:
         print(f"[write] {path} {len(group)} 行")
 
 
+def audit_shards(root: Path, tables: list[str]) -> list[str]:
+    """每个月度分片都该有那个月已经发生的全部交易日；缺了的要说出来，而不是留着让人日后误读。"""
+    gaps: list[str] = []
+    for table in tables:
+        directory = root / table
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.parquet")):
+            month = path.stem
+            if len(month) != 6 or not month.isdigit():
+                continue
+            try:
+                # 今天这一天的盘后包要等收盘之后才发，所以「已经该有数据」的日子严格早于今天。
+                expected = {day for day in trading_days_of_month(int(month[:4]), int(month[4:]))
+                            if day < datetime.now().date().isoformat()}
+            except RuntimeError as error:
+                print(f"[audit] {table}/{path.name} 取不到日历：{error}")
+                continue
+            frame = pd.read_parquet(path, columns=["date"])
+            have = {pd.Timestamp(value).strftime("%Y-%m-%d") for value in frame["date"]}
+            missing = sorted(expected - have)
+            if missing:
+                gaps.append(f"{table}/{path.name} 缺 {len(missing)} 个交易日：{missing[0]} … {missing[-1]}")
+    return gaps
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     parser.add_argument("--date")
     parser.add_argument("--start")
     parser.add_argument("--end")
+    parser.add_argument("--allow-partial", action="store_true",
+                        help="分片允许有缺口（默认有缺口就报错，免得长回看窗口静默读短）")
     args = parser.parse_args()
     root = Path(args.root)
 
@@ -344,9 +375,14 @@ def main() -> None:
     print(f"[plan] {len(days)} 个交易日：{days[0]} … {days[-1]}")
 
     for year in sorted({day[:4] for day in days}):
-        wanted = set(days)
-        year_days = sorted({d for day in days for d in trading_days_of_month(int(year), int(day[5:7]))
-                            if d.startswith(year) and (len(days) > 20 or d in wanted)})
+        fresh = {d for day in days for d in trading_days_of_month(int(year), int(day[5:7])) if d.startswith(year)}
+        path_year = root / "trading_days" / f"{year}.parquet"
+        if path_year.exists():
+            have = pd.read_parquet(path_year, columns=["date"])["date"]
+            fresh |= {pd.Timestamp(value).strftime("%Y-%m-%d") for value in have}
+        # 旧分片里可能带着未来日期（日历按月发布时写进去的），并回来之前一并截掉。
+        today = datetime.now().date().isoformat()
+        year_days = sorted(day for day in fresh if day <= today)
         table = pd.DataFrame({"date": pd.to_datetime(year_days), "market_code": "CN"})
         path = root / "trading_days" / f"{year}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,6 +462,12 @@ def main() -> None:
     write_month(pref_rows, root, "cn_stock_prefactors")
     write_year(inst_rows, root, "cn_stock_instruments")
     write_year(events_raw, root, "cn_stock_dividend")
+
+    gaps = audit_shards(root, ["cn_stock_real_bar1d", "cn_stock_bar1d", "cn_stock_prefactors"])
+    for line in gaps:
+        print(f"[audit] {line}")
+    if gaps and not args.allow_partial:
+        raise SystemExit("[audit] 分片有缺口：补导整段，或确认只想要一段再加 --allow-partial")
 
 
 if __name__ == "__main__":
