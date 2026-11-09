@@ -7,7 +7,9 @@
 1. 全部表停在「上周二」→ 必须按市场日历报出缺少的交易日数，不能报新鲜；
 2. 某张表 max(date) 落后 2 个交易日 → `--strict` 退出码 1；
 3. 分片被截断（distinct(date) 少于应有交易日）→ 必须报出；
-4. 全部对齐 → `--strict` 退出码 0。
+4. 全部对齐 → `--strict` 退出码 0；
+5. 落后 1 个交易日（容忍度内）→ 不得判成截断；
+6. 更早的月分片中间缺交易日 → 必须报出并指明年月。
 
 测试本身只依赖标准库 `unittest`（pytest 也能收集），这样在没有 pytest 的最小
 `.venv` 里也能跑：
@@ -37,6 +39,9 @@ import check_freshness as cf  # noqa: E402
 WEEK = [date(2026, 10, 26) + timedelta(days=i) for i in range(5)]
 LAST_TUESDAY = [d for d in WEEK if d <= date(2026, 10, 27)]
 AS_OF_FRIDAY_CLOSED = datetime(2026, 10, 30, 16, 0)
+# 2026-09 的工作日，用来造一个「更早的月分片」
+SEPTEMBER = [date(2026, 9, 1) + timedelta(days=i) for i in range(30)]
+SEPTEMBER = [d for d in SEPTEMBER if d.weekday() < 5]
 
 
 def _write_table(root: Path, table: str, shard: str, dates, *,
@@ -138,6 +143,50 @@ class FreshnessTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn('[过期]', proc.stdout)
         self.assertNotIn('分片缺', proc.stdout)
+
+    # ── fixture 5：落后 1 个交易日（容忍度内）不得判成截断 ─────────────
+    def test_one_day_behind_is_not_truncated(self):
+        _write_table(self.root, 'trading_days', '202610.parquet', WEEK,
+                     calendar=True)
+        # 到周四 10-29，落后周五 1 个交易日，但分片内部完整
+        _write_table(self.root, 'cn_stock_bar1d', '202610.parquet', WEEK[:4])
+
+        result = _analyze(self.root)
+        row = {x['table']: x for x in result['tables']}['cn_stock_bar1d']
+        self.assertEqual(row['lag_days'], 1)
+        self.assertEqual(row['status'], 'ok')
+        self.assertFalse(row['truncated'])
+        self.assertEqual(row['missing_days'], 0)
+        self.assertEqual(result['summary']['truncated'], 0)
+
+        proc = _run_cli(self.root, '--as-of', '2026-10-30T16:00', '--strict')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn('分片缺', proc.stdout)
+
+    # ── fixture 6：更早的月分片中间缺交易日 → 报出并指明年月 ───────────
+    def test_old_middle_shard_missing_days_is_reported(self):
+        _write_table(self.root, 'trading_days', '2026.parquet',
+                     SEPTEMBER + WEEK, calendar=True)
+        # 旧月分片 202609 内部缺 09-15；最后一个月分片完整
+        _write_table(self.root, 'cn_stock_bar1d', '202609.parquet',
+                     [d for d in SEPTEMBER if d != date(2026, 9, 15)])
+        _write_table(self.root, 'cn_stock_bar1d', '202610.parquet', WEEK)
+
+        result = _analyze(self.root)
+        row = {x['table']: x for x in result['tables']}['cn_stock_bar1d']
+        self.assertEqual(row['max_date'], '2026-10-30')
+        self.assertEqual(row['lag_days'], 0)
+        self.assertTrue(row['truncated'])
+        self.assertEqual(row['missing_days'], 1)
+        self.assertEqual([g['shard'] for g in row['truncated_shards']],
+                         ['202609.parquet'])
+        self.assertEqual([g['period'] for g in row['truncated_shards']],
+                         ['2026 年 09 月'])
+
+        proc = _run_cli(self.root, '--as-of', '2026-10-30T16:00')
+        self.assertIn('202609.parquet', proc.stdout)
+        self.assertIn('2026 年 09 月', proc.stdout)
+        self.assertIn('缺 1 个交易日', proc.stdout)
 
     # ── 附加：bar1d 与 real_bar1d 最大日期差 > 1 个交易日 → 单独告警 ──
     def test_bar_and_real_bar_gap_warning(self):
