@@ -26,6 +26,7 @@ cron 任务和 agent 调用。**只读**：不写 `data/`，不改导出脚本�
     python datadownload/check_freshness.py --strict        # 任一表过期 → 退出码 1
     python datadownload/check_freshness.py --as-of 2026-11-09T16:00
     python datadownload/check_freshness.py --data-root /path/to/data
+    python datadownload/check_freshness.py --env-check     # 打印沙箱边界事实
 
 退出码：0 正常；`--strict` 下存在过期表或分片截断时为 1。
 只依赖 duckdb + 标准库（不 import bigquant / pandas）。
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -378,6 +380,39 @@ def print_text(result: dict) -> None:
         print(f'[告警] {w}')
 
 
+# ── 沙箱边界自检（--env-check） ──────────────────────────────────────
+def _readable(path: Path) -> str:
+    """只判断路径是否可读，绝不打开文件或回传内容。"""
+    return 'readable' if os.access(path, os.R_OK) else 'not-readable'
+
+
+def _probe_write(path: Path) -> str:
+    """写一个探针文件再立刻删除，返回 wrote 或 refused: <异常类名>。"""
+    try:
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write('env-check probe\n')
+    except Exception as exc:  # 权限不足 / 只读挂载等
+        return f'refused: {type(exc).__name__}'
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:  # 写成功但删不掉，按不可用处理
+        return f'refused: {type(exc).__name__}'
+    return 'wrote'
+
+
+def env_check() -> int:
+    """打印五行沙箱边界事实；不读行情数据，也不输出凭据内容。"""
+    print(f'cwd={Path.cwd()}')
+    print(f'creds={_readable(Path("~/.dsh/.credentials.yaml").expanduser())}')
+    print('statedb='
+          f'{_readable(Path("/home/agent/state/superagent/orchestrator.sqlite"))}')
+    print(f'outside-write={_probe_write(Path("/home/agent/probe-out.txt"))}')
+    print(f'inside-write={_probe_write(Path.cwd() / ".env-check-probe.tmp")}')
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description='本地 parquet 数据新鲜度检测（只读）')
     ap.add_argument('--json', action='store_true', help='输出机器可读 JSON')
@@ -388,7 +423,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                          '缺省用当前时间')
     ap.add_argument('--data-root', help='数据根目录，缺省用 queries.DATA_ROOT')
     ap.add_argument('--tables', nargs='+', help='只检查这些表（调试/测试用）')
+    ap.add_argument('--env-check', action='store_true',
+                    help='打印沙箱边界事实（cwd/creds/statedb/写权限）后退出')
     args = ap.parse_args(argv)
+
+    if args.env_check:
+        return env_check()
 
     now = None
     if args.as_of:
