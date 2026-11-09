@@ -166,6 +166,20 @@ class FreshnessTest(unittest.TestCase):
         # 不加 --strict 时退出码仍为 0，方便 cron 只看 JSON
         self.assertEqual(proc.returncode, 0)
 
+    # ── 附加：--env-check 打印五行沙箱边界事实并退出 0 ──────────────────
+    def test_env_check_prints_five_facts(self):
+        # 临时目录里没有任何行情表，--env-check 也不该去读数据
+        proc = _run_cli(self.root, '--env-check')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        prefixes = ('cwd=', 'creds=', 'statedb=', 'outside-write=',
+                    'inside-write=')
+        for prefix in prefixes:
+            self.assertTrue(any(ln.startswith(prefix) for ln in lines),
+                            f'缺少 {prefix} 行：\n{proc.stdout}')
+        # 只断言结构；可读/可写结果随环境变化，不作为测试预期
+        self.assertEqual(len(lines), len(prefixes), proc.stdout)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
