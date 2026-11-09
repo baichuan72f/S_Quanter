@@ -16,7 +16,8 @@ cron 任务和 agent 调用。**只读**：不写 `data/`，不改导出脚本�
   `*_instruments` 允许落后 ≤ 5 个交易日。
 - 判定基准统一用市场日历算出的最近交易日；**不拿行情表互相作证**，也不让落后
   的 `trading_days` 反过来把行情表判成新鲜（日历表自身按零容忍单独判定）。
-- 每个分片额外核对 distinct(date) 与应有交易日数，抓「月中截断」。
+- 遍历每张表的**全部分片**，用分片自身 `min..max` 与应有交易日比对，
+  抓「月中截断」；允许容忍度之内的落后（那是正常状态），输出指明分片年月。
 - `cn_stock_bar1d` 与 `cn_stock_real_bar1d` 的最大日期相差 > 1 个交易日时单独告警。
 
 用法
@@ -77,6 +78,16 @@ _STATUS_CN = {
 
 
 # ── 日历工具（纯标准库） ──────────────────────────────────────────────
+def _shard_period(shard_name: str) -> str:
+    """分片文件名 → 中文年月（月分片）或年份（年分片），便于阅读。"""
+    stem = Path(shard_name).stem
+    if len(stem) == 6 and stem.isdigit():
+        return f'{stem[:4]} 年 {stem[4:]} 月'
+    if len(stem) == 4 and stem.isdigit():
+        return f'{stem} 年'
+    return stem
+
+
 def _prev_weekday(d: date) -> date:
     """d 及之前最近的一个工作日。"""
     while d.weekday() >= 5:  # 5=周六, 6=周日
@@ -207,6 +218,7 @@ def analyze(data_root: Optional[Path] = None,
         tables: List[dict] = []
         stale_names: List[str] = []
         truncated_names: List[str] = []
+        truncated_shards: List[dict] = []
         warnings: List[str] = []
 
         for t in queries.TABLES:
@@ -228,6 +240,7 @@ def analyze(data_root: Optional[Path] = None,
                 'status': 'missing',
                 'status_cn': _STATUS_CN['missing'],
                 'truncated': False,
+                'truncated_shards': [],
                 'missing_days': 0,
                 'note': '',
             }
@@ -266,25 +279,48 @@ def analyze(data_root: Optional[Path] = None,
             if item['status'] == 'stale':
                 stale_names.append(name)
 
-            # ── 分片截断：distinct(date) 是否少于应有交易日数 ──
+            # ── 分片截断：遍历全部分片，以分片自身 min..max 为基准 ──
+            # 只看分片内部缺的交易日；分片末尾落后多少属于新鲜度（status）范畴，
+            # 容忍度之内的落后不得被误判成截断。
             if spec.get('dense') and calendar_dates:
-                try:
-                    shard_min = min(_query_dates(con, [last]))
-                except Exception:
-                    shard_min = None
-                if shard_min is not None:
-                    item['shard_min_date'] = shard_min.isoformat()
-                    cap = (min(ref, calendar_max)
-                           if calendar_max is not None else ref)
-                    expected = {d for d in calendar_dates if shard_min <= d <= cap}
-                    if expected:
-                        actual = set(_query_dates(con, [last],
-                                                  start=shard_min, end=cap))
-                        missing = expected - actual
-                        item['missing_days'] = len(missing)
-                        if missing:
-                            item['truncated'] = True
-                            truncated_names.append(name)
+                shard_gaps: List[dict] = []
+                for shard in files:
+                    try:
+                        shard_dates = _query_dates(con, [shard],
+                                                   cn_only=is_calendar)
+                    except Exception:
+                        continue
+                    if not shard_dates:
+                        continue
+                    shard_min, shard_max = shard_dates[0], shard_dates[-1]
+                    if shard is last:
+                        item['shard_min_date'] = shard_min.isoformat()
+                    cap = (min(shard_max, calendar_max)
+                           if calendar_max is not None else shard_max)
+                    if cap < shard_min:
+                        continue
+                    expected = {d for d in calendar_dates
+                                if shard_min <= d <= cap}
+                    if not expected:
+                        continue
+                    missing = sorted(expected - set(shard_dates))
+                    if missing:
+                        shard_gaps.append({
+                            'table': name,
+                            'shard': shard.name,
+                            'period': _shard_period(shard.name),
+                            'min_date': shard_min.isoformat(),
+                            'max_date': shard_max.isoformat(),
+                            'missing_days': len(missing),
+                            'missing_dates': [d.isoformat() for d in missing],
+                        })
+                if shard_gaps:
+                    item['truncated'] = True
+                    item['truncated_shards'] = shard_gaps
+                    item['missing_days'] = sum(
+                        g['missing_days'] for g in shard_gaps)
+                    truncated_names.append(name)
+                    truncated_shards.extend(shard_gaps)
             tables.append(item)
 
         # ── bar1d / real_bar1d 最大日期差 > 1 个交易日 ──
@@ -330,6 +366,7 @@ def analyze(data_root: Optional[Path] = None,
                 'truncated_tables': truncated_names,
             },
             'warnings': warnings,
+            'truncated_shards': truncated_shards,
             'tables': tables,
         }
         return result
@@ -370,6 +407,12 @@ def print_text(result: dict) -> None:
     print(f'汇总: 共 {s["tables"]} 张表，过期 {s["stale"]}、合格 {s["ok"]}、'
           f'缺失 {s["missing"]}、读取失败 {s["error"]}，'
           f'分片截断 {s["truncated"]} 张')
+    if result.get('truncated_shards'):
+        print('分片截断明细:')
+        for g in result['truncated_shards']:
+            print(f'  {g["table"]} {g["period"]}（{g["shard"]}，'
+                  f'{g["min_date"]} ~ {g["max_date"]}）'
+                  f'缺 {g["missing_days"]} 个交易日')
     if (result['calendar_max_date']
             and result['calendar_max_date'] < result['market_latest_trading_day']):
         print('说明: 判定基准为市场日历最近交易日；交易日历自身按零容忍判定，'
@@ -420,6 +463,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             stale=counts['stale'], missing=counts['missing'],
             error=counts['error'], truncated=len(trunc),
             stale_tables=stale, truncated_tables=trunc)
+        result['truncated_shards'] = [
+            g for g in result['truncated_shards'] if g['table'] in wanted]
         result['strict_failed'] = bool(stale or trunc)
 
     if args.json:
